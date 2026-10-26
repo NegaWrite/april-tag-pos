@@ -22,7 +22,20 @@
         #video { display: none; }
         #canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
         
-        .controls { display: flex; gap: 10px; justify-content: center; margin-top: 5px; flex-wrap: wrap; }
+        .controls { display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
+        
+        .size-input-container {
+            display: flex; align-items: center; gap: 8px;
+            background: #333; padding: 8px 12px; border-radius: 8px;
+            border: 1px solid #555; font-size: 14px;
+        }
+        .size-input-container input {
+            background: #222; color: #fff; border: 1px solid #444;
+            padding: 6px; border-radius: 4px; width: 60px;
+            text-align: center; font-size: 14px;
+        }
+        .size-input-container input:focus { outline: none; border-color: #4ade80; }
+
         button, .file-label {
             background: #333; color: #fff; border: 1px solid #555; padding: 10px 16px;
             border-radius: 8px; font-size: 14px; cursor: pointer; display: inline-flex;
@@ -36,16 +49,111 @@
             box-shadow: 0 4px 20px rgba(0,0,0,0.6); position: relative;
         }
         #vis-canvas { width: 100%; height: 300px; display: block; }
+
+        /* Стили для встроенной консоли */
+        #console-container {
+            width: 100%; max-width: 500px; margin-top: 15px; margin-bottom: 30px;
+            background: #0a0a0a; border: 1px solid #333; border-radius: 12px; overflow: hidden;
+        }
+        .console-header {
+            background: #222; padding: 8px 12px; font-size: 12px; color: #888;
+            display: flex; justify-content: space-between; align-items: center;
+            border-bottom: 1px solid #333;
+        }
+        .console-header button {
+            padding: 4px 8px; font-size: 11px; border-radius: 4px; background: #444;
+        }
+        #console-output {
+            width: 100%; height: 200px; overflow-y: auto; padding: 10px; box-sizing: border-box;
+            font-family: 'Courier New', Courier, monospace; font-size: 12px; line-height: 1.4;
+            white-space: pre-wrap; word-break: break-all;
+        }
+        .log-log { color: #4ade80; }
+        .log-warn { color: #fbbf24; }
+        .log-error { color: #f87171; font-weight: bold; }
+        .log-info { color: #60a5fa; }
     </style>
 </head>
 <body>
 
-    <h1>AprilTag 36h11 · ID 0 · 20 см</h1>
+    <!-- Скрипт перехвата консоли (в самом начале) -->
+    <script>
+        window.addEventListener('DOMContentLoaded', () => {
+            const consoleOutput = document.getElementById('console-output');
+            
+            function safeStringify(obj) {
+                try { return typeof obj === 'object' ? JSON.stringify(obj) : String(obj); } 
+                catch (e) { return String(obj); }
+            }
+
+            function appendToConsole(args, type) {
+                if (!consoleOutput) return;
+                const time = new Date().toLocaleTimeString();
+                const msg = Array.from(args).map(safeStringify).join(' ');
+                
+                const el = document.createElement('div');
+                el.className = `log-${type}`;
+                el.textContent = `[${time}] ${msg}`;
+                consoleOutput.appendChild(el);
+                
+                // Авто-прокрутка вниз
+                consoleOutput.scrollTop = consoleOutput.scrollHeight;
+            }
+
+            // Перехватываем стандартные методы
+            const origLog = console.log;
+            console.log = function(...args) {
+                origLog.apply(console, args);
+                appendToConsole(args, 'log');
+            };
+
+            const origWarn = console.warn;
+            console.warn = function(...args) {
+                origWarn.apply(console, args);
+                appendToConsole(args, 'warn');
+            };
+
+            const origError = console.error;
+            console.error = function(...args) {
+                origError.apply(console, args);
+                appendToConsole(args, 'error');
+            };
+
+            const origInfo = console.info;
+            console.info = function(...args) {
+                origInfo.apply(console, args);
+                appendToConsole(args, 'info');
+            };
+
+            // Перехватываем глобальные ошибки и промисы
+            window.addEventListener('error', (e) => {
+                appendToConsole([`Ошибка: ${e.message} (${e.filename}:${e.lineno})`], 'error');
+            });
+            window.addEventListener('unhandledrejection', (e) => {
+                appendToConsole([`Promise Error: ${e.reason}`], 'error');
+            });
+
+            // Очистка консоли
+            document.getElementById('clear-console-btn').addEventListener('click', () => {
+                consoleOutput.innerHTML = '';
+            });
+        });
+    </script>
+
+    <h1>AprilTag 36h11 · ID 0</h1>
 
     <div class="container">
         <div id="video-container">
             <video id="video" playsinline autoplay muted></video>
             <canvas id="canvas" width="640" height="480"></canvas>
+        </div>
+
+        <div class="controls">
+            <div class="size-input-container">
+                Размер кода: 
+                <input type="number" id="tag-size-input" value="20" min="0.1" max="1000" step="0.01" inputmode="decimal">
+                см
+            </div>
         </div>
 
         <div class="controls">
@@ -61,11 +169,20 @@
         </div>
     </div>
 
+    <!-- Блок встроенной консоли -->
+    <div id="console-container">
+        <div class="console-header">
+            <span>Встроенная консоль</span>
+            <button id="clear-console-btn">Очистить</button>
+        </div>
+        <div id="console-output"></div>
+    </div>
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.1/math.min.js"></script>
     <script src="https://unpkg.com/comlink/dist/umd/comlink.js"></script>
 
     <script>
-        (async function() {
+        window.addEventListener('DOMContentLoaded', async () => {
             'use strict';
 
             const video = document.getElementById('video');
@@ -76,79 +193,75 @@
             
             const fileInput = document.getElementById('file-input');
             const cameraBtn = document.getElementById('camera-btn');
+            const tagSizeInput = document.getElementById('tag-size-input');
 
             const CAMERA_MATRIX = { fx: 939.33, fy: 938.25, cx: 640.34, cy: 340.71 };
 
             let isVideoMode = true;
             let apriltagDetector = null;
-            let initError = null;
+            let tagSizeCm = parseFloat(tagSizeInput.value) || 20;
 
-            // --- Отрисовка схемы ---
-            function drawSchematic(tx, ty, tz, distance, invPose, statusText = 'Ожидание...') {
-                const w = visCanvas.width;
-                const h = visCanvas.height;
-                visCtx.clearRect(0, 0, w, h);
+            function drawSchematic(tx, ty, tz, distance, invPose, statusText = 'Ожидание...', isError = false) {
+                try {
+                    const w = visCanvas.width;
+                    const h = visCanvas.height;
+                    visCtx.clearRect(0, 0, w, h);
 
-                const wallY = 40;
-                const tagCenterX = w / 2;
-                const tagCenterY = wallY;
-                const tagWidth = 60;
+                    const wallY = 40;
+                    const tagCenterX = w / 2;
+                    const tagCenterY = wallY;
+                    const tagWidth = 60;
 
-                // 1. Черная линия (Стена)
-                visCtx.beginPath();
-                visCtx.moveTo(0, wallY); visCtx.lineTo(w, wallY);
-                visCtx.strokeStyle = '#000000'; visCtx.lineWidth = 6; visCtx.stroke();
+                    visCtx.beginPath(); visCtx.moveTo(0, wallY); visCtx.lineTo(w, wallY);
+                    visCtx.strokeStyle = '#000000'; visCtx.lineWidth = 6; visCtx.stroke();
 
-                // 2. Синяя линия (Код)
-                visCtx.beginPath();
-                visCtx.moveTo(tagCenterX - tagWidth/2, tagCenterY); visCtx.lineTo(tagCenterX + tagWidth/2, tagCenterY);
-                visCtx.strokeStyle = '#00aaff'; visCtx.lineWidth = 8; visCtx.stroke();
+                    visCtx.beginPath();
+                    visCtx.moveTo(tagCenterX - tagWidth/2, tagCenterY); visCtx.lineTo(tagCenterX + tagWidth/2, tagCenterY);
+                    visCtx.strokeStyle = '#00aaff'; visCtx.lineWidth = 8; visCtx.stroke();
 
-                visCtx.fillStyle = '#ffffff'; visCtx.font = 'bold 16px sans-serif'; visCtx.textAlign = 'left';
-                visCtx.fillText('код', tagCenterX + tagWidth/2 + 10, tagCenterY + 5);
+                    visCtx.fillStyle = '#ffffff'; visCtx.font = 'bold 16px sans-serif'; visCtx.textAlign = 'left';
+                    visCtx.fillText('код', tagCenterX + tagWidth/2 + 10, tagCenterY + 5);
 
-                if (distance === null) {
-                    visCtx.fillStyle = initError ? '#ff5555' : '#888'; 
-                    visCtx.font = initError ? 'bold 14px sans-serif' : '14px sans-serif'; 
-                    visCtx.textAlign = 'center';
-                    visCtx.fillText(statusText, w/2, h/2 + 20);
-                    return;
+                    if (distance === null) {
+                        visCtx.fillStyle = isError ? '#ff5555' : '#cccccc'; 
+                        visCtx.font = 'bold 14px sans-serif'; 
+                        visCtx.textAlign = 'center';
+                        visCtx.fillText(statusText, w/2, h/2 + 20);
+                        return;
+                    }
+
+                    const scale = 120; 
+                    const phoneX = tagCenterX + (tx * scale) + (tz * scale * 0.2);
+                    const phoneY = tagCenterY + (ty * scale);
+
+                    visCtx.beginPath(); visCtx.moveTo(tagCenterX, tagCenterY); visCtx.lineTo(phoneX, phoneY);
+                    visCtx.strokeStyle = '#999999'; visCtx.lineWidth = 5; visCtx.stroke();
+
+                    const midX = (tagCenterX + phoneX) / 2;
+                    const midY = (tagCenterY + phoneY) / 2;
+                    visCtx.fillStyle = '#ffffff'; visCtx.font = 'bold 20px sans-serif'; visCtx.textAlign = 'right';
+                    visCtx.fillText(distance.toFixed(2) + 'm', midX - 15, midY - 10);
+
+                    let phoneAngle = 0;
+                    if (invPose) phoneAngle = Math.atan2(invPose[1][0], invPose[0][0]);
+
+                    visCtx.save();
+                    visCtx.translate(phoneX, phoneY);
+                    visCtx.rotate(phoneAngle);
+                    visCtx.beginPath(); visCtx.moveTo(-25, 0); visCtx.lineTo(25, 0);
+                    visCtx.strokeStyle = '#00cc66'; visCtx.lineWidth = 8; visCtx.stroke();
+                    visCtx.restore();
+
+                    visCtx.fillStyle = '#ffffff'; visCtx.font = 'bold 16px sans-serif'; visCtx.textAlign = 'center';
+                    visCtx.fillText('телефон', phoneX, phoneY + 30);
+                } catch (e) {
+                    console.error("Ошибка отрисовки схемы:", e);
                 }
-
-                // 3. Расчет положения телефона
-                const scale = 120; 
-                const phoneX = tagCenterX + (tx * scale) + (tz * scale * 0.2);
-                const phoneY = tagCenterY + (ty * scale);
-
-                // 4. Серая линия
-                visCtx.beginPath();
-                visCtx.moveTo(tagCenterX, tagCenterY); visCtx.lineTo(phoneX, phoneY);
-                visCtx.strokeStyle = '#999999'; visCtx.lineWidth = 5; visCtx.stroke();
-
-                // 5. Текст расстояния
-                const midX = (tagCenterX + phoneX) / 2;
-                const midY = (tagCenterY + phoneY) / 2;
-                visCtx.fillStyle = '#ffffff'; visCtx.font = 'bold 20px sans-serif'; visCtx.textAlign = 'right';
-                visCtx.fillText(distance.toFixed(2) + 'm', midX - 15, midY - 10);
-
-                // 6. Зеленая линия (Телефон)
-                let phoneAngle = 0;
-                if (invPose) phoneAngle = Math.atan2(invPose[1][0], invPose[0][0]);
-
-                visCtx.save();
-                visCtx.translate(phoneX, phoneY);
-                visCtx.rotate(phoneAngle);
-                visCtx.beginPath(); visCtx.moveTo(-25, 0); visCtx.lineTo(25, 0);
-                visCtx.strokeStyle = '#00cc66'; visCtx.lineWidth = 8; visCtx.stroke();
-                visCtx.restore();
-
-                visCtx.fillStyle = '#ffffff'; visCtx.font = 'bold 16px sans-serif'; visCtx.textAlign = 'center';
-                visCtx.fillText('телефон', phoneX, phoneY + 30);
             }
 
-            drawSchematic(0, 0, 0, null, null, 'Загрузка...');
+            drawSchematic(0, 0, 0, null, null, 'Инициализация...');
+            console.log("Скрипт запущен. Инициализация камеры и детектора...");
 
-            // --- Инициализация камеры ---
             async function startCamera() {
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({
@@ -161,44 +274,42 @@
                     
                     isVideoMode = true;
                     cameraBtn.style.display = 'none';
+                    console.log("Камера успешно запущена.");
                     
                     if (apriltagDetector) requestAnimationFrame(processVideoFrame);
                 } catch (err) {
                     console.error('Ошибка камеры:', err);
-                    drawSchematic(0, 0, 0, null, null, 'Нет доступа к камере. Используйте фото.');
+                    drawSchematic(0, 0, 0, null, null, 'Нет доступа к камере.', true);
                 }
             }
 
-            // --- Инициализация AprilTag (безопасная) ---
             async function initDetector() {
                 try {
-                    // Пытаемся создать воркер
+                    if (typeof Comlink === 'undefined') throw new Error("Comlink не загружен");
+                    
+                    console.log("Загрузка Web Worker (apriltag.js)...");
                     const worker = new Worker('https://arenaxr.github.io/apriltag-js-standalone/apriltag.js');
                     const ApriltagWorker = Comlink.wrap(worker);
 
                     apriltagDetector = await new ApriltagWorker(
                         Comlink.proxy(async () => {
+                            console.log("WASM модуль загружен. Настройка параметров камеры...");
                             await apriltagDetector.set_camera_info(
                                 CAMERA_MATRIX.fx, CAMERA_MATRIX.fy, CAMERA_MATRIX.cx, CAMERA_MATRIX.cy
                             );
-                            await apriltagDetector.set_tag_size(0, 0.2);
-                            drawSchematic(0, 0, 0, null, null, 'Детектор готов. Наведите камеру.');
+                            await apriltagDetector.set_tag_size(0, tagSizeCm / 100);
+                            console.log(`Размер тега установлен: ${tagSizeCm} см`);
+                            
+                            drawSchematic(0, 0, 0, null, null, 'Детектор готов.');
                             await startCamera();
                         })
                     );
                 } catch (e) {
                     console.error("Ошибка инициализации детектора:", e);
-                    initError = e;
-                    // Если это ошибка безопасности (origin 'null')
-                    if (e.name === 'SecurityError' || e.message.includes('origin')) {
-                        drawSchematic(0, 0, 0, null, null, 'Ошибка безопасности: запустите сайт через localhost или HTTPS (не file://)');
-                    } else {
-                        drawSchematic(0, 0, 0, null, null, 'Ошибка загрузки библиотеки. Проверьте интернет.');
-                    }
+                    drawSchematic(0, 0, 0, null, null, 'Ошибка библиотеки.', true);
                 }
             }
 
-            // --- Обработка изображения ---
             async function processImageData() {
                 if (!apriltagDetector) return;
 
@@ -206,7 +317,7 @@
                 try {
                     imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                 } catch (e) {
-                    drawSchematic(0, 0, 0, null, null, 'Ошибка чтения фото');
+                    console.error('Ошибка чтения getImageData:', e);
                     return;
                 }
 
@@ -245,16 +356,15 @@
 
                         drawSchematic(tx, ty, tz, distance, invPose);
                     } catch (e) {
-                        drawSchematic(0, 0, 0, null, null, 'Ошибка вычисления позы');
+                        console.error('Ошибка math.js:', e);
                     }
                 } else {
                     let msg = 'Тег ID 0 не найден';
                     if (detections.length > 0) msg = 'Найден тег, но НЕ ID 0';
-                    drawSchematic(0, 0, 0, null, null, msg);
+                    drawSchematic(0, 0, 0, null, null, msg, false);
                 }
             }
 
-            // --- Цикл для видео ---
             async function processVideoFrame() {
                 if (!isVideoMode) return;
                 if (video.readyState === video.HAVE_ENOUGH_DATA) {
@@ -264,13 +374,31 @@
                 if (isVideoMode) requestAnimationFrame(processVideoFrame);
             }
 
-            // --- Загрузка фото ---
+            tagSizeInput.addEventListener('change', async () => {
+                let val = parseFloat(tagSizeInput.value);
+                if (isNaN(val) || val <= 0) {
+                    tagSizeInput.value = tagSizeCm;
+                    return;
+                }
+                tagSizeCm = val;
+                console.log(`Размер изменен на ${tagSizeCm} см`);
+                
+                if (apriltagDetector) {
+                    await apriltagDetector.set_tag_size(0, tagSizeCm / 100);
+                    if (!isVideoMode && canvas.width > 0) {
+                        drawSchematic(0, 0, 0, null, null, 'Пересчет...');
+                        await processImageData();
+                    }
+                }
+            });
+
             fileInput.addEventListener('change', (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
 
                 isVideoMode = false;
                 cameraBtn.style.display = 'inline-flex';
+                console.log("Загрузка изображения...");
 
                 const reader = new FileReader();
                 reader.onload = (event) => {
@@ -282,13 +410,10 @@
                         canvas.width = w; canvas.height = h;
                         ctx.drawImage(img, 0, 0, w, h);
                         
-                        drawSchematic(0, 0, 0, null, null, 'Анализ изображения...');
+                        drawSchematic(0, 0, 0, null, null, 'Анализ...');
+                        console.log(`Фото загружено (${w}x${h}). Запуск детекции...`);
 
-                        if (apriltagDetector) {
-                            await processImageData();
-                        } else {
-                            drawSchematic(0, 0, 0, null, null, initError ? 'Библиотека не загружена (ошибка)' : 'Загрузка...');
-                        }
+                        if (apriltagDetector) await processImageData();
                     };
                     img.src = event.target.result;
                 };
@@ -297,11 +422,12 @@
 
             cameraBtn.addEventListener('click', async () => {
                 fileInput.value = '';
+                console.log("Возврат к камере...");
                 await startCamera();
             });
 
             await initDetector();
-        })();
+        });
     </script>
 </body>
 </html>
