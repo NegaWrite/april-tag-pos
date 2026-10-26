@@ -40,6 +40,9 @@
             border-radius: 12px;
             overflow: hidden;
             box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
         #video {
             display: none;
@@ -48,12 +51,43 @@
             width: 100%;
             height: 100%;
             display: block;
-            object-fit: cover;
+            object-fit: contain; /* Изменено на contain, чтобы фото не обрезалось */
+        }
+        /* Кнопки управления */
+        .controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 5px;
+            flex-wrap: wrap;
+        }
+        button, .file-label {
+            background: #333;
+            color: #fff;
+            border: 1px solid #555;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+        button:hover, .file-label:hover {
+            background: #444;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .file-label input[type="file"] {
+            display: none;
         }
         /* Контейнер для визуализации */
         #vis-container {
             width: 100%;
-            background: #2a2a2a; /* Темный фон как на вашем скриншоте */
+            background: #2a2a2a;
             border-radius: 12px;
             overflow: hidden;
             box-shadow: 0 4px 20px rgba(0,0,0,0.6);
@@ -61,7 +95,7 @@
         }
         #vis-canvas {
             width: 100%;
-            height: 300px; /* Фиксированная высота для схемы */
+            height: 300px;
             display: block;
         }
         .note {
@@ -78,10 +112,19 @@
     <h1>AprilTag 36h11 · ID 0 · 20 см</h1>
 
     <div class="container">
-        <!-- Камера -->
+        <!-- Экран вывода -->
         <div id="video-container">
             <video id="video" playsinline autoplay muted></video>
             <canvas id="canvas" width="640" height="480"></canvas>
+        </div>
+
+        <!-- Кнопки -->
+        <div class="controls">
+            <label class="file-label" id="upload-label">
+                📁 Загрузить фото
+                <input type="file" id="file-input" accept="image/*">
+            </label>
+            <button id="camera-btn" style="display: none;">📷 Вернуться к камере</button>
         </div>
 
         <!-- Схематичная визуализация -->
@@ -91,7 +134,8 @@
     </div>
 
     <div class="note">
-        Наведите камеру на AprilTag. Для доступа к камере нужен HTTPS.
+        Наведите камеру на AprilTag или загрузите фото.<br>
+        Для камеры нужен HTTPS.
     </div>
 
     <!-- Зависимости -->
@@ -108,6 +152,10 @@
             const ctx = canvas.getContext('2d');
             const visCanvas = document.getElementById('vis-canvas');
             const visCtx = visCanvas.getContext('2d');
+            
+            const fileInput = document.getElementById('file-input');
+            const cameraBtn = document.getElementById('camera-btn');
+            const uploadLabel = document.getElementById('upload-label');
 
             // Параметры камеры (для Tecno Pova 6 Neo и подобных)
             const CAMERA_MATRIX = {
@@ -117,8 +165,11 @@
                 cy: 340.7192620859387
             };
 
-            // --- Инициализация камеры ---
-            async function initCamera() {
+            let isVideoMode = true;
+            let apriltagDetector = null;
+
+            // --- 1. Инициализация камеры ---
+            async function startCamera() {
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({
                         video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'environment' },
@@ -126,8 +177,18 @@
                     });
                     video.srcObject = stream;
                     await video.play();
+                    
+                    // Восстанавливаем размеры под видео
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
+                    
+                    isVideoMode = true;
+                    cameraBtn.style.display = 'none';
+                    uploadLabel.style.opacity = '1';
+                    
+                    if (apriltagDetector) {
+                        requestAnimationFrame(processVideoFrame);
+                    }
                     return true;
                 } catch (err) {
                     console.error('Ошибка камеры:', err);
@@ -135,33 +196,39 @@
                     visCtx.fillStyle = '#f87171';
                     visCtx.font = '16px sans-serif';
                     visCtx.textAlign = 'center';
-                    visCtx.fillText('Нет доступа к камере', visCanvas.width/2, visCanvas.height/2);
+                    visCtx.fillText('Нет доступа к камере. Используйте загрузку фото.', visCanvas.width/2, visCanvas.height/2);
                     return false;
                 }
             }
 
-            // --- Инициализация AprilTag ---
+            // --- 2. Инициализация AprilTag ---
             const ApriltagWorker = Comlink.wrap(
                 new Worker('https://arenaxr.github.io/apriltag-js-standalone/apriltag.js')
             );
 
-            let apriltagDetector = null;
-
-            async function onDetectorReady() {
-                await apriltagDetector.set_camera_info(
-                    CAMERA_MATRIX.fx, CAMERA_MATRIX.fy, CAMERA_MATRIX.cx, CAMERA_MATRIX.cy
+            async function initDetector() {
+                apriltagDetector = await new ApriltagWorker(
+                    Comlink.proxy(async () => {
+                        await apriltagDetector.set_camera_info(
+                            CAMERA_MATRIX.fx, CAMERA_MATRIX.fy, CAMERA_MATRIX.cx, CAMERA_MATRIX.cy
+                        );
+                        await apriltagDetector.set_tag_size(0, 0.2); // 20 см
+                        
+                        // Запускаем камеру после готовности детектора
+                        const cameraOk = await startCamera();
+                        if (!cameraOk) {
+                            drawSchematic(0, 0, 0, null, null);
+                        }
+                    })
                 );
-                await apriltagDetector.set_tag_size(0, 0.2); // Размер 20 см
-                requestAnimationFrame(processFrame);
             }
 
-            // --- Отрисовка схемы (Ваша визуализация) ---
+            // --- 3. Отрисовка схемы (Ваша визуализация) ---
             function drawSchematic(tx, ty, tz, distance, invPose) {
                 const w = visCanvas.width;
                 const h = visCanvas.height;
                 visCtx.clearRect(0, 0, w, h);
 
-                // Базовые координаты для рисунка
                 const wallY = 40;
                 const tagCenterX = w / 2;
                 const tagCenterY = wallY;
@@ -186,9 +253,9 @@
                 // Текст "код"
                 visCtx.fillStyle = '#ffffff';
                 visCtx.font = 'bold 16px sans-serif';
+                visCtx.textAlign = 'left';
                 visCtx.fillText('код', tagCenterX + tagWidth/2 + 10, tagCenterY + 5);
 
-                // Если тег не найден, рисуем просто стену и код
                 if (distance === null) {
                     visCtx.fillStyle = '#888';
                     visCtx.font = '14px sans-serif';
@@ -197,12 +264,8 @@
                     return;
                 }
 
-                // Масштабирование координат для отображения (пикселей на метр)
+                // Масштабирование
                 const scale = 120; 
-
-                // Вычисляем положение телефона на экране
-                // tx - смещение вправо/влево, ty - вверх/вниз, tz - глубина (влияет на перспективу)
-                // Чтобы соответствовать картинке, используем комбинацию tx и ty, а tz чуть-чуть для объема
                 const phoneX = tagCenterX + (tx * scale) + (tz * scale * 0.2);
                 const phoneY = tagCenterY + (ty * scale);
 
@@ -220,14 +283,11 @@
                 visCtx.fillStyle = '#ffffff';
                 visCtx.font = 'bold 20px sans-serif';
                 visCtx.textAlign = 'right';
-                // Сдвигаем текст чуть левее линии
                 visCtx.fillText(distance.toFixed(2) + 'm', midX - 15, midY - 10);
 
                 // 4. Зеленая линия (Телефон)
-                // Вычисляем угол наклона телефона из матрицы поворота
                 let phoneAngle = 0;
                 if (invPose) {
-                    // Извлекаем угол поворота вокруг оси Z (рыскание/крен)
                     phoneAngle = Math.atan2(invPose[1][0], invPose[0][0]);
                 }
 
@@ -235,9 +295,9 @@
                 visCtx.translate(phoneX, phoneY);
                 visCtx.rotate(phoneAngle);
                 visCtx.beginPath();
-                visCtx.moveTo(-25, 0); // Длина зеленой линии
+                visCtx.moveTo(-25, 0); 
                 visCtx.lineTo(25, 0);
-                visCtx.strokeStyle = '#00cc66'; // Ярко-зеленый
+                visCtx.strokeStyle = '#00cc66';
                 visCtx.lineWidth = 8;
                 visCtx.stroke();
                 visCtx.restore();
@@ -249,29 +309,21 @@
                 visCtx.fillText('телефон', phoneX, phoneY + 30);
             }
 
-            // --- Основной цикл ---
-            async function processFrame() {
-                // 1. Рисуем камеру
-                if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                }
-
+            // --- 4. Обработка изображения (общая логика) ---
+            async function processImageData() {
                 let imageData;
                 try {
                     imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                 } catch (e) {
-                    requestAnimationFrame(processFrame);
                     return;
                 }
 
-                // Конвертация в ЧБ
                 const pixels = imageData.data;
                 const grayscale = new Uint8Array(canvas.width * canvas.height);
                 for (let i = 0, j = 0; i < pixels.length; i += 4, j++) {
                     grayscale[j] = Math.round(0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2]);
                 }
 
-                // 2. Детекция
                 let detections = [];
                 try {
                     detections = await apriltagDetector.detect(grayscale, canvas.width, canvas.height);
@@ -281,7 +333,6 @@
 
                 const targetTag = detections.find(d => d.id === 0);
 
-                // Обводка тега на видео (для наглядности)
                 if (targetTag) {
                     const corners = targetTag.corners;
                     ctx.beginPath();
@@ -293,45 +344,78 @@
                     ctx.stroke();
                 }
 
-                // 3. Отрисовка схемы
                 if (targetTag && targetTag.pose && targetTag.pose.length >= 16) {
                     try {
-                        // Преобразуем плоский массив в матрицу 4x4
                         const poseMatrix = math.reshape(targetTag.pose, [4, 4]);
-                        // Инвертируем матрицу (получаем положение камеры относительно тега)
                         const invPose = math.inv(poseMatrix);
                         
-                        // Извлекаем координаты
                         const tx = invPose[0][3];
                         const ty = invPose[1][3];
                         const tz = invPose[2][3];
-
-                        // Вычисляем реальное расстояние (Евклидово)
                         const distance = Math.sqrt(tx*tx + ty*ty + tz*tz);
 
-                        // Рисуем схему
                         drawSchematic(tx, ty, tz, distance, invPose);
                     } catch (e) {
-                        console.warn('Ошибка вычисления позы:', e);
                         drawSchematic(0, 0, 0, null, null);
                     }
                 } else {
-                    // Если тег не найден
                     drawSchematic(0, 0, 0, null, null);
                 }
-
-                requestAnimationFrame(processFrame);
             }
+
+            // --- 5. Цикл для видео ---
+            async function processVideoFrame() {
+                if (!isVideoMode) return; // Если переключились на фото, останавливаем цикл
+
+                if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    await processImageData();
+                }
+
+                if (isVideoMode) {
+                    requestAnimationFrame(processVideoFrame);
+                }
+            }
+
+            // --- 6. Загрузка фото ---
+            fileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                isVideoMode = false;
+                cameraBtn.style.display = 'inline-flex';
+                uploadLabel.style.opacity = '0.5';
+
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = async () => {
+                        // Устанавливаем размеры холста под загруженное фото
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        
+                        // Рисуем фото
+                        ctx.drawImage(img, 0, 0);
+                        
+                        // Запускаем однократную обработку
+                        if (apriltagDetector) {
+                            await processImageData();
+                        }
+                    };
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            });
+
+            // --- 7. Возврат к камере ---
+            cameraBtn.addEventListener('click', async () => {
+                fileInput.value = ''; // Сбрасываем инпут
+                await startCamera();
+            });
 
             // --- Запуск ---
-            const cameraOk = await initCamera();
-            if (cameraOk) {
-                apriltagDetector = await new ApriltagWorker(
-                    Comlink.proxy(() => {
-                        onDetectorReady();
-                    })
-                );
-            }
+            await initDetector();
+
         })();
     </script>
 </body>
